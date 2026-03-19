@@ -101,20 +101,30 @@ class AudioPlayerService : Service() {
                         p.start()
                         onStateChanged?.invoke("playing")
                         startTick()
-                        updateNote()
+                        updateNotification()
                     }
-                    mp.setOnCompletionListener { onStateChanged?.invoke("ended"); stopTick() }
-                    mp.setOnErrorListener { _, w, _ -> onError?.invoke(w); stopTick(); true }
+                    mp.setOnCompletionListener {
+                        onStateChanged?.invoke("ended")
+                        stopTick()
+                    }
+                    mp.setOnErrorListener { _, w, _ ->
+                        onError?.invoke(w)
+                        stopTick()
+                        true
+                    }
                     mp.prepareAsync()
                 }
             }
         }
     }
 
-    private fun doPlay()  { runCatching { player?.start(); onStateChanged?.invoke("playing"); startTick(); updateNote()
- } }
-    private fun doPause() { runCatching { player?.pause(); onStateChanged?.invoke("paused");  stopTick();  updateNote()
- } }
+    private fun doPlay() {
+        runCatching { player?.start(); onStateChanged?.invoke("playing"); startTick(); updateNotification() }
+    }
+
+    private fun doPause() {
+        runCatching { player?.pause(); onStateChanged?.invoke("paused"); stopTick(); updateNotification() }
+    }
 
     private fun release() {
         runCatching { player?.stop() }
@@ -146,7 +156,7 @@ class AudioPlayerService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(CH_ID, "X-WARE 플레이어",
                 NotificationManager.IMPORTANCE_LOW).also { it.setShowBadge(false) }
-            (getSystemService(NotificationManager::class.java)).createNotificationChannel(ch)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
         }
     }
 
@@ -158,7 +168,7 @@ class AudioPlayerService : Service() {
             .setOngoing(true)
             .build()
 
-    private fun updateNote() {
+    private fun updateNotification() {
         runCatching {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NID, buildNote())
