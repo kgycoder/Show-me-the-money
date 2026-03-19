@@ -8,99 +8,137 @@ import java.util.concurrent.TimeUnit
 class YouTubeExtractor {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .followRedirects(true)
         .build()
 
-    // Piped 공개 인스턴스 목록 (하나 실패하면 다음으로 시도)
-    private val pipedInstances = listOf(
+    private val instances = listOf(
         "https://pipedapi.kavin.rocks",
         "https://piped-api.garudalinux.org",
         "https://api.piped.projectsegfau.lt",
-        "https://pipedapi.in.projectsegfau.lt"
+        "https://pipedapi.adminforge.de",
+        "https://pipedapi.reallyaweso.me"
     )
 
     data class StreamInfo(
         val audioUrl: String,
         val title: String,
         val duration: Long,
-        val thumbnailUrl: String
+        val thumbnailUrl: String,
+        val needsProxy: Boolean = false
     )
 
     fun extractAudio(videoId: String): StreamInfo? {
-        for (instance in pipedInstances) {
-            val result = tryPiped(videoId, instance)
-            if (result != null) return result
+        // 1순위: Piped API
+        for (inst in instances) {
+            val r = tryPiped(videoId, inst)
+            if (r != null) return r
         }
-        android.util.Log.e("XWare/Extract", "All Piped instances failed for $videoId")
-        return null
+        // 2순위: Invidious API (Piped 전부 실패 시)
+        return tryInvidious(videoId)
     }
 
-    private fun tryPiped(videoId: String, baseUrl: String): StreamInfo? {
+    private fun tryPiped(videoId: String, base: String): StreamInfo? {
         return try {
             val req = Request.Builder()
-                .url("$baseUrl/streams/$videoId")
+                .url("$base/streams/$videoId")
                 .header("User-Agent", "XWare/1.0")
+                .header("Accept", "application/json")
                 .build()
 
             val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful) {
-                android.util.Log.w("XWare/Extract", "$baseUrl failed: ${resp.code}")
-                resp.close()
-                return null
-            }
-
-            val json = resp.body?.string() ?: return null
+            if (!resp.isSuccessful) { resp.close(); return null }
+            val body = resp.body?.string() ?: run { resp.close(); return null }
             resp.close()
 
-            val doc = JSONObject(json)
+            val doc = JSONObject(body)
+            if (doc.has("error") || doc.has("message")) return null
 
-            // 오류 응답 체크
-            if (doc.has("error")) {
-                android.util.Log.w("XWare/Extract", "$baseUrl error: ${doc.optString("error")}")
-                return null
-            }
-
-            val title = doc.optString("title", "")
-            val duration = doc.optLong("duration", 0L)
+            val title     = doc.optString("title", "")
+            val duration  = doc.optLong("duration", 0L)
             val thumbnail = doc.optString("thumbnailUrl",
                 "https://i.ytimg.com/vi/$videoId/hqdefault.jpg")
 
-            // audioStreams 배열에서 최적 오디오 선택
-            val audioStreams = doc.optJSONArray("audioStreams") ?: return null
-            if (audioStreams.length() == 0) return null
+            val streams = doc.optJSONArray("audioStreams") ?: return null
 
-            data class AS(val url: String, val bitrate: Int, val mime: String)
+            data class AS(val url: String, val bitrate: Int, val isOpus: Boolean)
             val list = mutableListOf<AS>()
-
-            for (i in 0 until audioStreams.length()) {
-                val s = audioStreams.getJSONObject(i)
+            for (i in 0 until streams.length()) {
+                val s = streams.getJSONObject(i)
                 val url = s.optString("url").takeIf { it.isNotEmpty() } ?: continue
-                val bitrate = s.optInt("bitrate", 0)
-                val mime = s.optString("mimeType", "")
-                list.add(AS(url, bitrate, mime))
+                list.add(AS(
+                    url      = url,
+                    bitrate  = s.optInt("bitrate", 0),
+                    isOpus   = s.optString("mimeType").contains("opus")
+                ))
             }
-
             if (list.isEmpty()) return null
 
-            // opus > aac, bitrate 높은 순
             val best = list.sortedWith(
-                compareByDescending<AS> { if (it.mime.contains("opus")) 1 else 0 }
+                compareByDescending<AS> { if (it.isOpus) 1 else 0 }
                     .thenByDescending { it.bitrate }
             ).first()
 
-            android.util.Log.d("XWare/Extract",
-                "[$baseUrl] ✓ ${best.mime} ${best.bitrate}bps")
+            android.util.Log.d("XWare", "Piped [$base] OK: ${best.bitrate}bps")
+            StreamInfo(best.url, title, duration, thumbnail)
 
-            StreamInfo(
-                audioUrl     = best.url,
-                title        = title,
-                duration     = duration,
-                thumbnailUrl = thumbnail
-            )
         } catch (e: Exception) {
-            android.util.Log.e("XWare/Extract", "$baseUrl exception: ${e.message}")
+            android.util.Log.w("XWare", "Piped [$base]: ${e.message}")
             null
         }
+    }
+
+    private fun tryInvidious(videoId: String): StreamInfo? {
+        val invidiousInstances = listOf(
+            "https://invidious.snopyta.org",
+            "https://inv.riverside.rocks",
+            "https://invidious.kavin.rocks"
+        )
+        for (base in invidiousInstances) {
+            try {
+                val req = Request.Builder()
+                    .url("$base/api/v1/videos/$videoId?fields=title,lengthSeconds,videoThumbnails,adaptiveFormats")
+                    .header("User-Agent", "XWare/1.0")
+                    .build()
+
+                val resp = client.newCall(req).execute()
+                if (!resp.isSuccessful) { resp.close(); continue }
+                val body = resp.body?.string() ?: run { resp.close(); continue }
+                resp.close()
+
+                val doc      = JSONObject(body)
+                val title    = doc.optString("title", "")
+                val duration = doc.optLong("lengthSeconds", 0L)
+                val thumb    = doc.optJSONArray("videoThumbnails")
+                    ?.optJSONObject(0)?.optString("url")
+                    ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+
+                val formats = doc.optJSONArray("adaptiveFormats") ?: continue
+
+                data class AF(val url: String, val bitrate: Int, val isOpus: Boolean)
+                val list = mutableListOf<AF>()
+                for (i in 0 until formats.length()) {
+                    val f = formats.getJSONObject(i)
+                    if (!f.optString("type").startsWith("audio/")) continue
+                    val url = f.optString("url").takeIf { it.isNotEmpty() } ?: continue
+                    list.add(AF(url, f.optInt("bitrate", 0),
+                        f.optString("type").contains("opus")))
+                }
+                if (list.isEmpty()) continue
+
+                val best = list.sortedWith(
+                    compareByDescending<AF> { if (it.isOpus) 1 else 0 }
+                        .thenByDescending { it.bitrate }
+                ).first()
+
+                android.util.Log.d("XWare", "Invidious [$base] OK")
+                return StreamInfo(best.url, title, duration, thumb)
+
+            } catch (e: Exception) {
+                android.util.Log.w("XWare", "Invidious [$base]: ${e.message}")
+            }
+        }
+        return null
     }
 }
