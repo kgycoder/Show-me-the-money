@@ -93,7 +93,15 @@ class AudioPlayerService : Service() {
                             .setUsage(AudioAttributes.USAGE_MEDIA)
                             .build()
                     )
-                    mp.setDataSource(info.audioUrl)
+                    mp.setDataSource(
+    applicationContext,
+    android.net.Uri.parse(info.audioUrl),
+    mapOf(
+        "User-Agent" to "Mozilla/5.0 (Android 11; Mobile) AppleWebKit/537.36",
+        "Referer"    to "https://www.youtube.com/",
+        "Origin"     to "https://www.youtube.com"
+    )
+)
                     mp.setOnPreparedListener { p ->
                         duration = p.duration.toDouble() / 1000.0
                         onReady?.invoke()
