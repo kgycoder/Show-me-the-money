@@ -101,7 +101,7 @@ class AudioPlayerService : Service() {
                         p.start()
                         onStateChanged?.invoke("playing")
                         startTick()
-                        notify()
+                        updateNote()
                     }
                     mp.setOnCompletionListener { onStateChanged?.invoke("ended"); stopTick() }
                     mp.setOnErrorListener { _, w, _ -> onError?.invoke(w); stopTick(); true }
@@ -111,8 +111,10 @@ class AudioPlayerService : Service() {
         }
     }
 
-    private fun doPlay()  { runCatching { player?.start(); onStateChanged?.invoke("playing"); startTick(); notify() } }
-    private fun doPause() { runCatching { player?.pause(); onStateChanged?.invoke("paused");  stopTick();  notify() } }
+    private fun doPlay()  { runCatching { player?.start(); onStateChanged?.invoke("playing"); startTick(); updateNote()
+ } }
+    private fun doPause() { runCatching { player?.pause(); onStateChanged?.invoke("paused");  stopTick();  updateNote()
+ } }
 
     private fun release() {
         runCatching { player?.stop() }
@@ -156,7 +158,7 @@ class AudioPlayerService : Service() {
             .setOngoing(true)
             .build()
 
-    private fun notify() {
+    private fun updateNote() {
         runCatching {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NID, buildNote())
